@@ -1,9 +1,7 @@
-import dxcam
 import numpy as np
 from wechat_ocr.ocr_manager import OcrManager, OCR_MAX_TASK_ID
 import re
 import time
-import cv2
 import configparser
 import winsound
 import win32api
@@ -11,64 +9,43 @@ import win32con
 import shutil
 import os
 import json
+import msvcrt  # 用于文件锁定
 
 # 读取配置文件
 config = configparser.ConfigParser()
 config.read('config.ini', encoding='utf-8-sig')
 
+wechat_ocr_dir = "C:\\Users\\admin\\AppData\\Roaming\\Tencent\\WeChat\\XPlugin\\Plugins\\WeChatOCR\\7079\\extracted\\WeChatOCR.exe"
+wechat_dir = "F:\\WeChat\\[3.9.10.25]"
 
-
-# 创建相机对象
-cam = dxcam.create(device_idx=0, output_idx=0,output_color="GRAY")
-time.sleep(0.1)
-def get_screen_size():
-    # 获取屏幕尺寸
-    try:
-        screen_width, screen_height = pyautogui.size()
-        print('当前屏幕尺寸：',screen_width, screen_height)
-        return screen_width, screen_height
-    except Exception as e:
-        print("无法获取屏幕尺寸:", e)
-        return None, None
-
-def adjust_region(region):
-    # 获取屏幕尺寸
-    screen_width, screen_height = get_screen_size()
-    if screen_width is None or screen_height is None:
-        print("无法获取屏幕尺寸，将不进行边界检查")
-        return region
-    
-    # 如果指定区域超出屏幕范围，则调整区域大小
-    x1, y1, x2, y2 = region
-    x1 = max(0, min(x1, screen_width))
-    y1 = max(0, min(y1, screen_height))
-    x2 = max(0, min(x2, screen_width))
-    y2 = max(0, min(y2, screen_height))
-    
-    return (x1, y1, x2, y2)
-
-# 获取左上坐标
-first_point = tuple(map(int, config['coordinates']['first_point'].split(',')))
-
-# 获取右下坐标
-second_point = tuple(map(int, config['coordinates']['second_point'].split(',')))
-
-wechat_ocr_dir = config['wechat']['wechat_ocr_dir']
-wechat_dir = config['wechat']['wechat_dir']
 
 matchingStr = config['matching']['rule']
 timelong = config['sleep']['time']
 btimelong = config['sleep']['btime']
 ytimelong = config['sleep']['ytime']
+globalNumberUrl = config['global_file']['number']
+globallockUrl = config['global_file']['lock']
+config1 = configparser.ConfigParser()
+config1.read(globalNumberUrl, encoding='utf-8-sig')
+lastNumber = int(config1['last_number']['number'])
 
+# 定义函数用于读取和修改lastNumber
+def read_and_modify_last_number(new_last_number):
+    global lastNumber
+    global globallockUrl
+    try:
+        with open(globallockUrl, 'w') as f:
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)  # 尝试获取文件锁
+            config1.read(globalNumberUrl, encoding='utf-8-sig')
+            config1.set('last_number', 'number', str(new_last_number))
+            with open(globalNumberUrl, 'w',encoding='utf-8-sig') as configfile:
+                config1.write(configfile)
+                lastNumber = new_last_number
+                print("识别码已经修改为:", lastNumber)
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)  # 释放文件锁
+    except IOError:
+        print("无法获取文件锁")
 
-# 调整屏幕区域
-region = adjust_region((first_point[0], first_point[1], second_point[0], second_point[1]))
-
-# 更新左上和右下坐标
-first_point = (region[0], region[1])
-second_point = (region[2], region[3])
-lastNumber = 0
 
 def ocr_result_callback(img_path:str, results:dict):
     global lastNumber
@@ -79,7 +56,7 @@ def ocr_result_callback(img_path:str, results:dict):
                 match = re.search(r'\d{6}', results['ocrResult'][i]['text'])
                 number = match.group()
                 if(number!=lastNumber):
-                    lastNumber = number
+                    
                     # 模拟键盘输入
                     for k in list(number):
                         win32api.keybd_event(numberToaic[k], 0, 0, 0)  # a按下
@@ -99,7 +76,9 @@ def ocr_result_callback(img_path:str, results:dict):
                     time1 = time.time()
                     day = time.strftime("%Y-%m-%d", time.localtime(time1))
                     date = time.strftime("%H%M%S", time.localtime(time1))
+                    lastNumber = number
                     copy_and_rename_file(img_path,'./'+day,number+'-'+ date)
+                    read_and_modify_last_number(lastNumber)
                     print('休眠中...')
                     time.sleep(float(timelong))
                 break
@@ -136,16 +115,11 @@ ocr_manager.SetExePath(wechat_ocr_dir)
 ocr_manager.SetUsrLibDir(wechat_dir)
 # 设置ocr识别结果的回调函数
 ocr_manager.SetOcrResultCallback(ocr_result_callback)
+ocr_manager.StartWeChatOCR()
 
 while True:
-    # 抓取图像 指定屏幕区域
-    img = cam.grab(region=region)
-    if img is not None:
-        # 检查图像是否有效
-        if np.mean(img) != 0:
-            cv2.imwrite('obj.png', img)
-            ocr_manager.StartWeChatOCR()
-            ocr_manager.DoOCRTask('./obj.png')
-            while ocr_manager.m_task_id.qsize() != OCR_MAX_TASK_ID:
-                pass
+    ocr_manager.DoOCRTask('obj.png')
+    while ocr_manager.m_task_id.qsize() != OCR_MAX_TASK_ID:
+        pass
+    
 
